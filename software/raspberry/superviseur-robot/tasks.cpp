@@ -304,7 +304,7 @@ void Tasks::Run() {
 void Tasks::Stop() {
     monitor.Close();
     robot.Close();
-    camera.Close();
+    if (camera.IsOpen()) {camera.Close();}
 }
 
 /**
@@ -427,7 +427,13 @@ void Tasks::ReceiveFromMonTask(void *arg) {
         else if (msgRcv ->CompareID(MESSAGE_CAM_POSITION_COMPUTE_STOP)) {
             rt_sem_v(&sem_stopPosition);
         }
-        delete(msgRcv); // mus be deleted manually, no consumer
+        else if (msgRcv ->CompareID(MESSAGE_MONITOR_LOST)) {
+            cout << "Connection between Monitor and Supervisor compromised" << endl << flush;
+            //rt_sem_v(&sem_stopCamera); // stop camera
+            //rt_sem_v(&sem_stopPosition); // stop position acquisition
+            Stop();
+        }
+        delete(msgRcv); // must be deleted manually, no consumer
     }
 }
 
@@ -565,14 +571,16 @@ Message *Tasks::ReadInQueue(RT_QUEUE *queue) {
     return msg;
 }
 
+/**
+ *  Feature 13 -- periodic battery level acquisition
+ * 
+ * This function periodically acquires robot's battery level when asked by the monitor
+ */
 void Tasks::GetVBat(void * arg) {
-    
     int rs;
-    
     cout << "Start " << __PRETTY_FUNCTION__ << endl << flush;
     // Synchronization barrier (waiting that all tasks are starting)
     rt_sem_p(&sem_barrier, TM_INFINITE);
-    
     rt_task_set_periodic(NULL,TM_NOW,500000000);
     while(1){
         rt_task_wait_period(NULL);
@@ -581,26 +589,29 @@ void Tasks::GetVBat(void * arg) {
         rs = robotStarted;
         rt_mutex_release(&mutex_robotStarted);
         if (rs == 1) {
-            
             //Ask the battery level to the robot:
             MessageBattery * levelBat;
             rt_mutex_acquire(&mutex_robot, TM_INFINITE);
             levelBat = (MessageBattery*)robot.Write(new Message(MESSAGE_ROBOT_BATTERY_GET));
             rt_mutex_release(&mutex_robot);
-            // Send the message:
             WriteInQueue(&q_messageToMon, levelBat);
+        }
+        else {
+            cout << "Robot failed to start" << endl << flush; 
         }
         cout << endl << flush;
     }
 }
 
+// Feature 14 -- open camera
+// Feature 15 -- periodic image acquisition
 void Tasks::ManageCamera(void * arg){
     cout << "Start " << __PRETTY_FUNCTION__ << endl << flush;
     bool isOpen;
     // Synchronization barrier (waiting that all tasks are starting)
     rt_sem_p(&sem_barrier, TM_INFINITE);
     while (1){
-        // Fonctionnalité 14
+        // Feature 14
         rt_sem_p(&sem_openCamera,TM_INFINITE);
         cout << "Trying to open Camera" << endl << flush;
         rt_mutex_acquire(&mutex_camera,TM_INFINITE);
@@ -618,10 +629,10 @@ void Tasks::ManageCamera(void * arg){
             monitor.Write(new Message(MESSAGE_ANSWER_ACK));
             rt_mutex_release(&mutex_monitor);
         }
-        // Fonctionnalité 15
-        rt_task_set_periodic(NULL,TM_NOW,100000000); // envoi toutes les 100 ms
+        // Feature 15
+        rt_task_set_periodic(NULL,TM_NOW,100000000); // periodic : every 100 ms
         while(1){
-            if (!camera.IsOpen()) break; // if camera's closed, stop img acquisition
+            if (!camera.IsOpen()) break; // if camera is closed, stop img acquisition
             rt_task_wait_period(NULL);
             cout << "CAMERA : Periodic image acquisition" << endl << flush;
             rt_mutex_acquire(&mutex_camera,TM_INFINITE);
@@ -655,13 +666,13 @@ void Tasks::ManageCamera(void * arg){
     }
 }
 
+// Feature 16 -- stop image acquisition
 void Tasks::StopCamera(void * arg){
     bool isOpen;
     cout << "Start " << __PRETTY_FUNCTION__ << endl << flush;
     // Synchronization barrier (waiting that all tasks are starting)
     rt_sem_p(&sem_barrier, TM_INFINITE);
     while (1){
-        // Fonctionnalité 16
         rt_sem_p(&sem_stopCamera,TM_INFINITE);
         cout << "Trying to close Camera" << endl << flush;
         rt_mutex_acquire(&mutex_camera,TM_INFINITE);
@@ -683,11 +694,17 @@ void Tasks::StopCamera(void * arg){
     }
 }
  
+/**
+* Feature 17 -- setup Arena outline
+* 
+* This Function searches an arena on last acquired image. If found, it is drawn and kept on future images, else nothing is saved nor drawn
+*
+*
+*/ 
 void Tasks::SetupArena(void * arg){
     cout << "Start " << __PRETTY_FUNCTION__ << endl << flush;
     // Synchronization barrier (waiting that all tasks are starting)
     rt_sem_p(&sem_barrier, TM_INFINITE);
-    //Fonctionnalité 17
     while (1) {
         rt_sem_p(&sem_setupArena,TM_INFINITE);
         rt_mutex_acquire(&mutex_camera,TM_INFINITE);
@@ -717,11 +734,15 @@ void Tasks::SetupArena(void * arg){
     }
 }
 
+/**
+* Feature 18 -- get robot's position 
+*
+* This function enables position acquisiton
+*/
 void Tasks::RobotPosition(void * arg) {
     cout << "Start " << __PRETTY_FUNCTION__ << endl << flush;
     // Synchronization barrier (waiting that all tasks are starting)
     rt_sem_p(&sem_barrier, TM_INFINITE);
-    // Fonctionnalité 18
     while (1) {
         rt_sem_p(&sem_robotPosition,TM_INFINITE);
         rt_mutex_acquire(&mutex_imageType,TM_INFINITE);
@@ -731,11 +752,15 @@ void Tasks::RobotPosition(void * arg) {
     }
 }
 
+/** 
+* Feature 19 -- stop getting robot's position
+*
+* This function disables position acquisition
+*/
 void Tasks::StopPosition(void * arg) {
     cout << "Start" << __PRETTY_FUNCTION__ << endl << flush;
     //Synchronization barrier (waiting that all tasks are starting)
     rt_sem_p(&sem_barrier, TM_INFINITE);
-    // Fonctionnalité 19
     while(1) {
         rt_sem_p(&sem_stopPosition, TM_INFINITE);
         rt_mutex_acquire(&mutex_imageType,TM_INFINITE);
@@ -745,6 +770,11 @@ void Tasks::StopPosition(void * arg) {
     }
 }
 
+/** 
+* Feature 11 -- Watchdog
+*
+* This function allows the robot to start with Watchdog disabled
+*/
 void Tasks::StartRobotTaskWithoutWatchdog(void *arg) {
     cout << "Start " << __PRETTY_FUNCTION__ << endl << flush;
     // Synchronization barrier (waiting that all tasks are starting)
@@ -752,20 +782,14 @@ void Tasks::StartRobotTaskWithoutWatchdog(void *arg) {
     int count = 0;
     Message * msgSend;
 
-    /**************************************************************************************/
-    /* The task startRobot starts here                                                    */
-    /**************************************************************************************/
     while (1) {
-        
-            rt_sem_p(&sem_startRobotWithoutWatchdog, TM_INFINITE);
-            cout << "Start robot without watchdog (";
-            rt_mutex_acquire(&mutex_robot, TM_INFINITE);
-            msgSend = robot.Write(robot.StartWithoutWD());
-            rt_mutex_release(&mutex_robot);
-            cout << msgSend->GetID();
-            cout << ")" << endl;
-        
-        
+        rt_sem_p(&sem_startRobotWithoutWatchdog, TM_INFINITE);
+        cout << "Start robot without watchdog (";
+        rt_mutex_acquire(&mutex_robot, TM_INFINITE);
+        msgSend = robot.Write(robot.StartWithoutWD());
+        rt_mutex_release(&mutex_robot);
+        cout << msgSend->GetID();
+        cout << ")" << endl;
         cout << "Movement answer: " << msgSend->ToString() << endl << flush;
         WriteInQueue(&q_messageToMon, msgSend);  // msgSend will be deleted by sendToMon
 
@@ -788,15 +812,16 @@ void Tasks::StartRobotTaskWithoutWatchdog(void *arg) {
     }
 }
 
+/** 
+* Feature 11 -- Watchdog
+*
+* This function allows the robot to start with Watchdog enabled
+*/
 void Tasks::StartRobotTaskWithWatchdog(void *arg) {
     cout << "Start " << __PRETTY_FUNCTION__ << endl << flush;
     // Synchronization barrier (waiting that all tasks are starting)
     rt_sem_p(&sem_barrier, TM_INFINITE);
     Message * msgSend;
-    /**************************************************************************************/
-    /* The task startRobot starts here                                                    */
-    /**************************************************************************************/
-    
     rt_task_set_periodic(NULL, TM_NOW, 100000000000);
     while (1) { 
         rt_sem_p(&sem_startRobotWithWatchdog, TM_INFINITE);
@@ -809,7 +834,7 @@ void Tasks::StartRobotTaskWithWatchdog(void *arg) {
         cout << "Movement answer: " << msgSend->ToString() << endl << flush;
         WriteInQueue(&q_messageToMon, msgSend);  // msgSend will be deleted by sendToMon
         
-           /* each second reload the watchdog*/
+           /* reload the watchdog each second */
         if (msgSend->GetID() == MESSAGE_ANSWER_ACK) {
             rt_mutex_acquire(&mutex_robotStarted, TM_INFINITE);
             robotStarted = 1;
@@ -818,53 +843,32 @@ void Tasks::StartRobotTaskWithWatchdog(void *arg) {
         else{
             cout << "Robot failed to start" << endl << flush;    
         }
-        rt_sem_v(&sem_reloadWatchDog);
-        
-        
-   /*     while (1) {  
-            rt_task_wait_period(NULL);
-            rt_mutex_acquire(&mutex_robotStarted, TM_INFINITE);
-            cout << "mutex aqcuired for watchdog realoding" << endl << flush;
-            if(robotStarted == 1) {
-                cout << "in if statement" << endl << flush;
-                
-                rt_mutex_acquire(&mutex_robot, TM_INFINITE);
-                msg = robot.Write(robot.ReloadWD());
-                rt_mutex_acquire(&mutex_robot,TM_INFINITE);
-                if (msg ->GetID() == MESSAGE_ANSWER_ACK){
-                    cout << "WD Reloaded succecefully" << endl << flush;
-                }
-                else{
-                    cout << "WD failed to Reload" << endl << flush;
-                }
-            }
-            else{break;} 
-            rt_mutex_release(&mutex_robotStarted);
-        }   */
-                
+        rt_sem_v(&sem_reloadWatchDog);    
     }
 }              
 
+/** 
+* Feature 11 -- Watchdog
+*
+* This function reloads the Watchdog periodically when it has been enabled by the StartRobotWithWatchdog function
+*/
 void Tasks::reloadWatchDog(void *arg){
     Message *msg;
     int count = 0 ;
     rt_sem_p(&sem_barrier, TM_INFINITE);
     int rs;
-    
     rt_task_set_periodic(NULL, TM_NOW, 1000000000);
+    rt_sem_p(&sem_reloadWatchDog, TM_INFINITE);
     while (1) {  
         rt_task_wait_period(NULL);
         rt_mutex_acquire(&mutex_robotStarted, TM_INFINITE);
         rs = robotStarted;
         rt_mutex_release(&mutex_robotStarted);
-        //cout << "mutex aqcuired for watchdog realoding" << endl << flush;
-        if(rs == 1) {
-            //cout << "in if statement" << endl << flush;            
+        if(rs == 1) {     
             rt_mutex_acquire(&mutex_robot, TM_INFINITE);
             msg = robot.Write(robot.ReloadWD());
             rt_mutex_release(&mutex_robot);
             if (msg ->GetID() == MESSAGE_ANSWER_ACK){
-               // cout << "WD Reloaded succecefully" << endl << flush;
             }
             else{
                 count += 1;
@@ -876,7 +880,6 @@ void Tasks::reloadWatchDog(void *arg){
                     count = 0;
                 }
             }
-                //cout << "WD failed to Reload" << endl << flush;
         }
     }
 }  
