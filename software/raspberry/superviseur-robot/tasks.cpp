@@ -22,7 +22,7 @@
 #define PRIORITY_TSERVER 30
 #define PRIORITY_TOPENCOMROBOT 20
 #define PRIORITY_TMOVE 24
-#define PRIORITY_TSENDTOMON 22
+#define PRIORITY_TSENDTOMON 25
 #define PRIORITY_TRECEIVEFROMMON 25
 #define PRIORITY_TSTARTROBOT 20
 #define PRIORITY_TCAMERA 16
@@ -31,6 +31,7 @@
 #define PRIORITY_TPOSITION 20
 #define PRIORITY_TWATCHDOG 20
 #define PRIORITY_TRELOADWATCHDOG 27
+#define PRIORITY_TERROR 20
 
 
 /*
@@ -91,6 +92,10 @@ void Tasks::Init() {
         cerr << "Error mutex create: " << strerror(-err) << endl << flush;
         exit(EXIT_FAILURE);
     }
+    if (err = rt_mutex_create(&mutex_problemComRobot, NULL)) {
+        cerr << "Error mutex create: " << strerror(-err) << endl << flush;
+        exit(EXIT_FAILURE);
+    }
 
     cout << "Mutexes created successfully" << endl << flush;
 
@@ -146,6 +151,10 @@ void Tasks::Init() {
         exit(EXIT_FAILURE);
     }
     if (err = rt_sem_create(&sem_reloadWatchDog, NULL, 0, S_FIFO)) {
+        cerr << "Error semaphore create: " << strerror(-err) << endl << flush;
+        exit(EXIT_FAILURE);
+    }
+    if (err = rt_sem_create(&sem_comRobotError, NULL, 0, S_FIFO)) {
         cerr << "Error semaphore create: " << strerror(-err) << endl << flush;
         exit(EXIT_FAILURE);
     }
@@ -210,7 +219,11 @@ void Tasks::Init() {
         cerr << "Error task create: " << strerror(-err) << endl << flush;
         exit(EXIT_FAILURE);
     }
-    if (err = rt_task_create(&th_reloadWatchDog, "th_reloaWatchDog", 0, PRIORITY_TRELOADWATCHDOG, 0)) {
+    if (err = rt_task_create(&th_reloadWatchDog, "th_reloadWatchDog", 0, PRIORITY_TRELOADWATCHDOG, 0)) {
+        cerr << "Error task create: " << strerror(-err) << endl << flush;
+        exit(EXIT_FAILURE);
+    }
+    if (err = rt_task_create(&th_watchError, "th_watchError", 0, PRIORITY_TERROR, 0)) {
         cerr << "Error task create: " << strerror(-err) << endl << flush;
         exit(EXIT_FAILURE);
     }
@@ -291,7 +304,11 @@ void Tasks::Run() {
         cerr << "Error task start: " << strerror(-err) << endl << flush;
         exit(EXIT_FAILURE);
     }
-    if (err = rt_task_start(&th_reloadWatchDog,(void(*)(void*)) & Tasks::reloadWatchDog, this)){
+    if (err = rt_task_start(&th_reloadWatchDog,(void(*)(void*)) & Tasks::ReloadWatchDog, this)){
+        cerr << "Error task start: " << strerror(-err) << endl << flush;
+        exit(EXIT_FAILURE); 
+    }
+    if (err = rt_task_start(&th_watchError,(void(*)(void*)) & Tasks::WatchError, this)){
         cerr << "Error task start: " << strerror(-err) << endl << flush;
         exit(EXIT_FAILURE); 
     }
@@ -428,6 +445,7 @@ void Tasks::ReceiveFromMonTask(void *arg) {
             rt_sem_v(&sem_stopPosition);
         }
         else if (msgRcv ->CompareID(MESSAGE_MONITOR_LOST)) {
+            // Feature 5 -- show when connection is lost between monitor and supervisor
             cout << "Connection between Monitor and Supervisor compromised" << endl << flush;
             //rt_sem_v(&sem_stopCamera); // stop camera
             //rt_sem_v(&sem_stopPosition); // stop position acquisition
@@ -498,7 +516,16 @@ void Tasks::StartRobotTask(void *arg) {
             rt_mutex_acquire(&mutex_robotStarted, TM_INFINITE);
             robotStarted = 1;
             rt_mutex_release(&mutex_robotStarted);
+            rt_mutex_acquire(&mutex_problemComRobot)
+            problemComRobot = 0;
+            rt_mutex_release(&mutex_problemComRobot);
         }
+        else {
+            rt_mutex_acquire(&mutex_problemComRobot)
+            problemComRobot = 1;
+            rt_mutex_release(&mutex_problemComRobot);
+        }
+        rt_sem_v(&sem_comRobotError);
     }
 }
 
@@ -594,7 +621,23 @@ void Tasks::GetVBat(void * arg) {
             rt_mutex_acquire(&mutex_robot, TM_INFINITE);
             levelBat = (MessageBattery*)robot.Write(new Message(MESSAGE_ROBOT_BATTERY_GET));
             rt_mutex_release(&mutex_robot);
-            WriteInQueue(&q_messageToMon, levelBat);
+            if (levelBat->CompareID(MESSAGE_ANSWER_ROBOT_ERROR) ||
+            levelBat->CompareID(MESSAGE_ANSWER_ROBOT_TIMEOUT) ||
+            levelBat->CompareID(MESSAGE_ANSWER_ROBOT_UNKNOWN_COMMAND)) {
+                rt_mutex_acquire(&mutex_problemComRobot)
+                problemComRobot = 1;
+                rt_mutex_release(&mutex_problemComRobot);
+            }
+            else {
+                rt_mutex_acquire(&mutex_monitor, TM_INFINITE);
+                monitor.write(levelBat);
+                rt_mutex_release(&mutex_monitor);
+                rt_mutex_acquire(&mutex_problemComRobot)
+                problemComRobot = 0;
+                rt_mutex_release(&mutex_problemComRobot);
+            }
+            rt_sem_v(&sem_comRobotError);
+            delete(levelBat);
         }
         else {
             cout << "Robot failed to start" << endl << flush; 
@@ -603,8 +646,14 @@ void Tasks::GetVBat(void * arg) {
     }
 }
 
-// Feature 14 -- open camera
-// Feature 15 -- periodic image acquisition
+/**
+* Feature 14 -- open camera
+* Feature 15 -- periodic image acquisition
+*
+* This function opens the camera and starts periodic image acquisition (10 fps)
+* Image can have an arena drawn (view SetupArena task)
+* Image can have the position of a robot marked (view RobotPosition task)
+*/
 void Tasks::ManageCamera(void * arg){
     cout << "Start " << __PRETTY_FUNCTION__ << endl << flush;
     bool isOpen;
@@ -666,7 +715,11 @@ void Tasks::ManageCamera(void * arg){
     }
 }
 
-// Feature 16 -- stop image acquisition
+/** 
+* Feature 16 -- stop image acquisition
+*
+* This function stops image acquisition when asked by the monitor
+*/
 void Tasks::StopCamera(void * arg){
     bool isOpen;
     cout << "Start " << __PRETTY_FUNCTION__ << endl << flush;
@@ -797,18 +850,16 @@ void Tasks::StartRobotTaskWithoutWatchdog(void *arg) {
             rt_mutex_acquire(&mutex_robotStarted, TM_INFINITE);
             robotStarted = 1;
             rt_mutex_release(&mutex_robotStarted);
-            count = 0;
+            rt_mutex_acquire(&mutex_problemComRobot);
+            problemComRobot = 0;
+            rt_mutex_release(&mutex_problemComRobot);
         }
         else{
-            count += 1;
-            if (count==3){
-                Message * msg = new Message(MESSAGE_MONITOR_LOST);
-                monitor.Write(msg);
-                robot.Close();
-                robot.Write(robot.Reset());
-                count = 0;
-            }
+            rt_mutex_acquire(&mutex_problemComRobot);
+            problemComRobot = 1;
+            rt_mutex_release(&mutex_problemComRobot);
         }
+        rt_sem_v(&sem_comRobotError);
     }
 }
 
@@ -852,9 +903,11 @@ void Tasks::StartRobotTaskWithWatchdog(void *arg) {
 *
 * This function reloads the Watchdog periodically when it has been enabled by the StartRobotWithWatchdog function
 */
-void Tasks::reloadWatchDog(void *arg){
+void Tasks::ReloadWatchDog(void *arg){
+    cout << "Start " << __PRETTY_FUNCTION__ << endl << flush;
     Message *msg;
     int count = 0 ;
+    // Synchronization barrier (waiting that all tasks are starting)
     rt_sem_p(&sem_barrier, TM_INFINITE);
     int rs;
     rt_task_set_periodic(NULL, TM_NOW, 1000000000);
@@ -869,18 +922,44 @@ void Tasks::reloadWatchDog(void *arg){
             msg = robot.Write(robot.ReloadWD());
             rt_mutex_release(&mutex_robot);
             if (msg ->GetID() == MESSAGE_ANSWER_ACK){
+                rt_mutex_acquire(&mutex_problemComRobot);
+                problemComRobot = 0;
+                rt_mutex_release(&mutex_problemComRobot);
             }
-            else{
-                count += 1;
-                if (count ==3){
-                    Message * msg = new Message(MESSAGE_MONITOR_LOST);
-                    monitor.Write(msg);
-                    robot.Close();
-                    robot.Write(robot.Reset());
-                    count = 0;
-                }
-            }
+            else {
+                rt_mutex_acquire(&mutex_problemComRobot);
+                problemComRobot = 1;
+                rt_mutex_release(&mutex_problemComRobot);
+                rt_sem_v(&sem_comRobotError);
+            };
         }
     }
 }  
 
+/**
+* Feature 8 & 9 -- watching communication errors between robot and supervisor
+*
+* This function counts the number of consecutive errors during communication between robot and supervisor.
+* It closes communication if this number is above 3, putting it in an initial state.
+*
+*/
+void Tasks::WatchError(void * arg) {
+    cout << "Start " << __PRETTY_FUNCTION__ << endl << flush;
+    int count = 0;
+    // Synchronization barrier (waiting that all tasks are starting)
+    rt_sem_p(&sem_barrier, TM_INFINITE);
+    while(1) {
+        rt_sem_p(&sem_comRobotError,TM_INFINITE);
+        if (problem) {
+            count ++;
+            if (count >= 3) {
+                Message * msgError = new Message(MESSAGE_MONITOR_LOST);
+                rt_mutex_acquire(&mutex_monitor,TM_INFINITE);
+                monitor.Write(msgError);
+                rt_mutex_release(&mutex_monitor);
+                robot.Close();
+                count = 0;
+            }
+        }  else count = 0 ;
+    }
+}

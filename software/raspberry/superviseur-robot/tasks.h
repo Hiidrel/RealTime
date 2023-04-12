@@ -70,7 +70,8 @@ private:
     int move = MESSAGE_ROBOT_STOP;
     int arena_confirm ;
     int imgType = 0; //0 for classic image acquisition, 1 for acquisition with position
-    
+    int problemComRobot = 0;
+
     /**********************************************************************/
     /* Tasks                                                              */
     /**********************************************************************/
@@ -89,6 +90,7 @@ private:
     RT_TASK th_startRobotWithoutWatchdog;
     RT_TASK th_startRobotWithWatchdog;
     RT_TASK th_reloadWatchDog;
+    RT_TASK th_watchError;
     
     /**********************************************************************/
     /* Mutex                                                              */
@@ -100,6 +102,7 @@ private:
     RT_MUTEX mutex_camera;
     RT_MUTEX mutex_arena;
     RT_MUTEX mutex_imageType;
+    RT_MUTEX mutex_problemComRobot;
 
     /**********************************************************************/
     /* Semaphores                                                         */
@@ -117,6 +120,7 @@ private:
     RT_SEM sem_startRobotWithoutWatchdog;
     RT_SEM sem_startRobotWithWatchdog;
     RT_SEM sem_reloadWatchDog;
+    RT_SEM sem_comRobotError;
 
     /**********************************************************************/
     /* Message queues                                                     */
@@ -191,7 +195,9 @@ private:
     
     void StartRobotTaskWithoutWatchdog(void *arg);
 
-    void reloadWatchDog(void *arg);
+    void ReloadWatchDog(void *arg);
+
+    void WatchError(void * arg);
 };
 
 #endif // __TASKS_H__ 
