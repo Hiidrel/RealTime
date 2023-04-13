@@ -66,6 +66,7 @@ private:
     ComRobot robot;
     Camera camera;
     Arena arena;
+    int watchdog = 0;
     int robotStarted = 0;
     int move = MESSAGE_ROBOT_STOP;
     int arena_confirm ;
@@ -87,9 +88,7 @@ private:
     RT_TASK th_setupArena;
     RT_TASK th_robotPosition;
     RT_TASK th_stopPosition;
-    RT_TASK th_startRobotWithoutWatchdog;
-    RT_TASK th_startRobotWithWatchdog;
-    RT_TASK th_reloadWatchDog;
+    RT_TASK th_watchdog;
     RT_TASK th_watchError;
     
     /**********************************************************************/
@@ -103,6 +102,7 @@ private:
     RT_MUTEX mutex_arena;
     RT_MUTEX mutex_imageType;
     RT_MUTEX mutex_problemComRobot;
+    RT_MUTEX mutex_watchdog;
 
     /**********************************************************************/
     /* Semaphores                                                         */
@@ -117,10 +117,8 @@ private:
     RT_SEM sem_confirmArena;
     RT_SEM sem_robotPosition;
     RT_SEM sem_stopPosition;
-    RT_SEM sem_startRobotWithoutWatchdog;
-    RT_SEM sem_startRobotWithWatchdog;
-    RT_SEM sem_reloadWatchDog;
     RT_SEM sem_comRobotError;
+    RT_SEM sem_watchdog;
 
     /**********************************************************************/
     /* Message queues                                                     */
@@ -178,26 +176,40 @@ private:
      */
     Message *ReadInQueue(RT_QUEUE *queue);
     
-    
+    /**
+     * @brief Thread watching robot battery level
+     */
     void GetVBat(void * arg) ;
     
+    /**
+     * @brief Thread handling start and control of camera (image acquisition 10fps, with or without an arena, with or without robot's position)
+     */
     void ManageCamera(void * arg) ;
     
+    /**
+     * @brief Thread stopping image acquisition
+     */
     void StopCamera(void * arg) ;
     
+    /**
+     * @brief Thread searching for an arena on an image and accepting or rejecting it
+     */
     void SetupArena(void * arg);
     
+    /**
+     * @brief Thread starting robot's position acquisition on images
+     */
     void RobotPosition(void * arg);
 
+    /**
+     * @brief Thread stopping robot's position acquisition on images
+     */
     void StopPosition(void * arg);
     
-    void StartRobotTaskWithWatchdog(void *arg);
-    
-    void StartRobotTaskWithoutWatchdog(void *arg);
-
-    void ReloadWatchDog(void *arg);
-
-    void WatchError(void * arg);
+    /**
+     * @brief Thread handling control of robot's Watchdog
+     */
+    void WatchDog(void * arg);
 };
 
 #endif // __TASKS_H__ 
