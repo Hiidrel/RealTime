@@ -119,6 +119,7 @@ private:
     RT_SEM sem_stopPosition;
     RT_SEM sem_comRobotError;
     RT_SEM sem_watchdog;
+    RT_SEM sem_restartServer;
 
     /**********************************************************************/
     /* Message queues                                                     */
