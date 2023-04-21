@@ -228,8 +228,6 @@ void Tasks::Init() {
         exit(EXIT_FAILURE);
     }
     cout << "Queues created successfully" << endl << flush;
-    
-
 }
 
 /**
@@ -416,7 +414,7 @@ void Tasks::ReceiveFromMonTask(void *arg) {
                 // Feature 5 && 6 -- catching communication error message with monitor, stop & close robot & camera
                 cout << "Monitor is lost, but don't panic (or maybe just a little (okay now you can panic))" << endl << flush;
                 rt_mutex_acquire(&mutex_robotStarted, TM_INFINITE);
-                robotStarted = 1;
+                robotStarted = 0;
                 rt_mutex_release(&mutex_robotStarted);
                 rt_mutex_acquire(&mutex_robot, TM_INFINITE);
                 robot.Write(robot.Stop());
